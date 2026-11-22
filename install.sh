@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Instala la factory desde un release de GitHub (Linux y macOS, amd64 y arm64).
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/factory/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jmaister/factory/main/install.sh | bash
 # Variables opcionales: FACTORY_REPO (owner/repo), FACTORY_VERSION (p. ej. v0.1.0), PREFIX (por defecto ~/.local)
 set -euo pipefail
 
-REPO="${FACTORY_REPO:-OWNER/factory}"
+REPO="${FACTORY_REPO:-jmaister/factory}"
 VERSION="${FACTORY_VERSION:-v0.1.0}"
 PREFIX="${PREFIX:-$HOME/.local}"
 

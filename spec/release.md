@@ -31,13 +31,13 @@ En Forgejo, en el repo de la factory:
 Linux y macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/factory/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jmaister/factory/main/install.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/OWNER/factory/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/jmaister/factory/main/install.ps1 | iex
 ```
 
 Variables opcionales: `FACTORY_REPO` (owner/repo), `FACTORY_VERSION` (p. ej. `v0.1.0`), `PREFIX` (por defecto `~/.local`, solo Linux/macOS).
@@ -49,7 +49,7 @@ Los scripts comprueban el checksum antes de instalar.
 
 ## Pendiente antes del primer release
 
-- Crear el repo de GitHub de la factory, y sustituir `OWNER/factory` en `install.sh`, `install.ps1` y este documento.
+- Crear el repo de GitHub de la factory, y sustituir `jmaister/factory` en `install.sh`, `install.ps1` y este documento.
 - Crear el repo espejo en Forgejo y el token `GH_RELEASE_TOKEN`.
 - Decidir si el repo de GitHub es público (los instaladores descargan sin autenticación).
 - Crear el tag `v0.1.0` (acción visible fuera de tu equipo: pendiente de confirmar).

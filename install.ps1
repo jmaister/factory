@@ -1,9 +1,9 @@
 # Instala la factory desde un release de GitHub (Windows, amd64 y arm64).
-#   irm https://raw.githubusercontent.com/OWNER/factory/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/jmaister/factory/main/install.ps1 | iex
 # Variables opcionales: FACTORY_REPO (owner/repo), FACTORY_VERSION (p. ej. v0.1.0)
 $ErrorActionPreference = 'Stop'
 
-$Repo = if ($env:FACTORY_REPO) { $env:FACTORY_REPO } else { 'OWNER/factory' }
+$Repo = if ($env:FACTORY_REPO) { $env:FACTORY_REPO } else { 'jmaister/factory' }
 $Version = if ($env:FACTORY_VERSION) { $env:FACTORY_VERSION } else { 'v0.1.0' }
 
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
