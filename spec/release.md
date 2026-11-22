@@ -49,7 +49,6 @@ Los scripts comprueban el checksum antes de instalar.
 
 ## Pendiente antes del primer release
 
-- Crear el repo de GitHub de la factory, y sustituir `jmaister/factory` en `install.sh`, `install.ps1` y este documento.
-- Crear el repo espejo en Forgejo y el token `GH_RELEASE_TOKEN`.
-- Decidir si el repo de GitHub es público (los instaladores descargan sin autenticación).
-- Crear el tag `v0.1.0` (acción visible fuera de tu equipo: pendiente de confirmar).
+- Crear el repo espejo en Forgejo, la variable `GITHUB_REPO` (`jmaister/factory`) y el secret `GH_RELEASE_TOKEN`.
+- Confirmar que el repo `jmaister/factory` es público (los instaladores descargan sin autenticación).
+- Crear el tag `v0.1.0` (publica el release: pendiente de confirmar).
