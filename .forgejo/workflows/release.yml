@@ -1,0 +1,47 @@
+# Release: al subir un tag vX.Y.Z compila la factory para todas las plataformas
+# y publica los binarios en un release de GitHub.
+# Secrets de Forgejo necesarios: GH_RELEASE_TOKEN (GitHub, Contents: Read and write en el repo de la factory).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: compilar todas las plataformas
+        run: make -f dist.mk dist VERSION=${{ github.ref_name }}
+
+      - name: publicar el release en GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          REPO: ${{ vars.GITHUB_REPO }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/$REPO"
+          auth="Authorization: Bearer $GH_TOKEN"
+          # Crear el release (si ya existe, lo reutilizamos)
+          code=$(curl -s -o /tmp/rel.json -w "%{http_code}" -X POST -H "$auth" -H "Accept: application/vnd.github+json" \
+            "$api/releases" -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"generate_release_notes\":true}")
+          if [ "$code" != "201" ]; then
+            curl -fsSL -H "$auth" -H "Accept: application/vnd.github+json" "$api/releases/tags/$TAG" -o /tmp/rel.json
+          fi
+          id=$(python3 -c 'import json; print(json.load(open("/tmp/rel.json"))["id"])')
+          # Subir los archivos (sustituye los que ya existan)
+          for f in dist/*.tar.gz dist/*.zip dist/checksums.txt; do
+            name=$(basename "$f")
+            old=$(curl -fsSL -H "$auth" "$api/releases/$id/assets" | python3 -c "import json,sys; [print(a['id']) for a in json.load(sys.stdin) if a['name']=='$name']")
+            for a in $old; do curl -fsSL -X DELETE -H "$auth" "$api/releases/assets/$a"; done
+            curl -fsSL -X POST -H "$auth" -H "Content-Type: application/octet-stream" \
+              "https://uploads.github.com/repos/$REPO/releases/$id/assets?name=$name" --data-binary "@$f" > /dev/null
+            echo "subido $name"
+          done

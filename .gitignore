@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+bin/
+factory-state.json
+work/
+academia-factory.yaml.bak
+factory-sessions.json
+factory.log
+dist/
+*.env
+factory.env
