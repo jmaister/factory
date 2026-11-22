@@ -23,7 +23,7 @@ jobs:
       - name: publicar el release en GitHub
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
-          REPO: ${{ vars.GITHUB_REPO }}
+          REPO: ${{ vars.GH_REPO }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
