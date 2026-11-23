@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -71,15 +72,40 @@ func saveSlots(cfg *config.Config, m map[int]slotRecord) error {
 	return os.Rename(tmp, slotsPath(cfg))
 }
 
-// slotPorts devuelve los puertos del gateway y de la aplicación de la ranura i.
-func slotPorts(cfg *config.Config, i int) (gateway, app int) {
-	gateway = cfg.Slots.BasePort + 10*i
-	return gateway, gateway + 1
+// slotBase es el puerto base de la ranura i: base_port + 10·i.
+func slotBase(cfg *config.Config, i int) int {
+	return cfg.Slots.BasePort + 10*i
+}
+
+// servicePort es el puerto del servicio svc en la ranura i.
+func servicePort(cfg *config.Config, i int, svc config.Service) int {
+	return slotBase(cfg, i) + svc.Port
+}
+
+// publicService es el servicio cuya URL se muestra: el marcado como public, o el primero.
+func publicService(cfg *config.Config) config.Service {
+	for _, svc := range cfg.Services {
+		if svc.Public {
+			return svc
+		}
+	}
+	return cfg.Services[0]
 }
 
 func slotURL(cfg *config.Config, i int) string {
-	gw, _ := slotPorts(cfg, i)
-	return fmt.Sprintf("%s:%d", strings.TrimRight(cfg.Slots.PublicHost, "/"), gw)
+	if len(cfg.Services) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", strings.TrimRight(cfg.Slots.PublicHost, "/"), servicePort(cfg, i, publicService(cfg)))
+}
+
+// placeholders sustituye {port}, {<nombre>_port}, {slot} y {public_url} en un texto para la ranura i.
+func placeholders(cfg *config.Config, i int, svc config.Service, text string) string {
+	pairs := []string{"{port}", fmt.Sprint(servicePort(cfg, i, svc)), "{slot}", fmt.Sprint(i), "{public_url}", slotURL(cfg, i)}
+	for _, other := range cfg.Services {
+		pairs = append(pairs, "{"+other.Name+"_port}", fmt.Sprint(servicePort(cfg, i, other)))
+	}
+	return strings.NewReplacer(pairs...).Replace(text)
 }
 
 func slotDir(cfg *config.Config, i int) string {
@@ -159,25 +185,33 @@ func linkDBs(cfg *config.Config, i int) error {
 	return nil
 }
 
-// startSlot arranca la aplicación y el gateway de la ranura en una sesión de screen.
-// Los procesos se apuntan en un fichero para poder pararlos después.
+// startSlot arranca los servicios de la ranura en una sesión de screen. Cada proceso se apunta en un
+// fichero para poder pararlo después.
 func startSlot(cfg *config.Config, i int) error {
 	dir := slotDir(cfg, i)
-	gw, app := slotPorts(cfg, i)
 	logPath := filepath.Join(cfg.StateDir(), "slots", fmt.Sprint(i)+".log")
-	script := fmt.Sprintf(`#!/usr/bin/env bash
-cd %s || exit 1
-export TG_SERVER_HOST=0.0.0.0 TG_SERVER_PORT=%d TG_APP_PORT=%d PUBLIC_URL=%s:%d
-( exec %s run --port %d ) &
-echo $! > %s
-( exec %s ) &
-echo $! >> %s
-wait
-`, shellQuote(dir), gw, app, strings.TrimRight(cfg.Slots.PublicHost, "/"), gw,
-		cfg.AppBinary, app, shellQuote(slotPidFile(cfg, i)),
-		cfg.GatewayCommand, shellQuote(slotPidFile(cfg, i)))
+	var b strings.Builder
+	b.WriteString("#!/usr/bin/env bash\n")
+	fmt.Fprintf(&b, "cd %s || exit 1\n", shellQuote(dir))
+	for _, svc := range cfg.Services {
+		var env []string
+		keys := make([]string, 0, len(svc.Env))
+		for k := range svc.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			env = append(env, k+"="+shellQuote(placeholders(cfg, i, svc, svc.Env[k])))
+		}
+		fmt.Fprintf(&b, "( export FACTORY_SLOT=%d; %s exec %s ) &\n", i, strings.Join(env, " ")+" ", placeholders(cfg, i, svc, svc.Command))
+		fmt.Fprintf(&b, "echo $! >> %s\n", shellQuote(slotPidFile(cfg, i)))
+	}
+	b.WriteString("wait\n")
 	scriptPath := filepath.Join(cfg.StateDir(), "slots", fmt.Sprint(i)+".sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(scriptPath, []byte(b.String()), 0o700); err != nil {
 		return err
 	}
 	out, err := exec.Command("screen", "-L", "-Logfile", logPath, "-dmS", slotSession(cfg, i), "bash", scriptPath).CombinedOutput()

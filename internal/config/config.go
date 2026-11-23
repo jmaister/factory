@@ -69,6 +69,18 @@ type CIServer struct {
 	Repo  string `yaml:"repo"` // owner/nombre en el servidor de CI
 }
 
+// Service es un proceso que arranca en cada ranura de despliegue local.
+// Puerto: el de la ranura (base_port + 10·i) más `port`. En `command` y `env` se pueden usar:
+// {port} (puerto de este servicio), {<nombre>_port} (puerto de otro servicio), {slot} (número de ranura)
+// y {public_url} (URL pública de la ranura).
+type Service struct {
+	Name    string            `yaml:"name"`
+	Port    int               `yaml:"port"`
+	Public  bool              `yaml:"public"` // la URL que se muestra al usuario sale de este servicio
+	Command string            `yaml:"command"`
+	Env     map[string]string `yaml:"env"`
+}
+
 // Config es la configuración de un proyecto.
 type Config struct {
 	Dir     string  `yaml:"-"` // carpeta de factory.yaml (donde están factory.env y el estado)
@@ -81,13 +93,12 @@ type Config struct {
 	LocalLinks []string `yaml:"local_links"`
 	// Slots: ranuras de despliegue local (cada una con su copia de datos y sus puertos).
 	Slots Slots `yaml:"slots"`
-	// AppBinary: binario de la aplicación (lo genera el build). GatewayCommand: arranca el gateway.
-	AppBinary      string   `yaml:"app_binary"`
-	GatewayCommand string   `yaml:"gateway_command"`
-	Agent          Agent    `yaml:"agent"`
-	Webhook        Webhook  `yaml:"webhook"`
-	CI             CIServer `yaml:"ci-server"`
-	Timezone       string   `yaml:"timezone"` // zona horaria para mostrar y registrar horas (p. ej. Europe/Madrid)
+	// Services: procesos que arrancan en cada ranura (p. ej. la app y un proxy). Ver Service.
+	Services []Service `yaml:"services"`
+	Agent    Agent     `yaml:"agent"`
+	Webhook  Webhook   `yaml:"webhook"`
+	CI       CIServer  `yaml:"ci-server"`
+	Timezone string    `yaml:"timezone"` // zona horaria para mostrar y registrar horas (p. ej. Europe/Madrid)
 }
 
 // DefaultModel y DefaultMaxRework se usan si la configuración no los indica.
@@ -202,11 +213,13 @@ func Load(path string) (*Config, error) {
 	if cfg.Slots.PublicHost == "" {
 		cfg.Slots.PublicHost = "http://localhost"
 	}
-	if cfg.AppBinary == "" {
-		cfg.AppBinary = "./academia"
+	if cfg.LocalDeploy && len(cfg.Services) == 0 {
+		return nil, fmt.Errorf("local_deploy está activo pero no hay services: define al menos uno")
 	}
-	if cfg.GatewayCommand == "" {
-		cfg.GatewayCommand = "tg run --config taronja-gateway.yaml"
+	for _, svc := range cfg.Services {
+		if svc.Name == "" || svc.Command == "" {
+			return nil, fmt.Errorf("cada service necesita name y command")
+		}
 	}
 	if cfg.Repo.Branch == "" {
 		cfg.Repo.Branch = "main"

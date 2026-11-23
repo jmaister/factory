@@ -8,6 +8,10 @@
                                          └──── 🔁 REWORK ◀───────┘ (auto on CI failure or review comments)
 ```
 
+![The factory terminal UI: task list grouped by column, detail panel with progress, PR and CI status, and the slot URL](docs/screenshot.png)
+
+*Sample data. Emoji and spinner glyphs are left out of the image because the font used to render it does not include them; your terminal shows them.*
+
 Every task runs in its own git worktree, in an agent session you can reach from the Claude app (Remote Control). Each branch can be deployed to one of several local **test slots**, each with its own URL, so several features can be tested side by side.
 
 ## Features
@@ -73,47 +77,72 @@ The factory is configured per project. Put two files next to your repository (ke
 **`factory.yaml`**
 
 ```yaml
+# --- Tickets: where tasks live ---------------------------------------------
 tickets:
   type: vikunja
   url: http://vikunja.local:3456
   token: ${VIKUNJA_TOKEN}
-  project: myproject            # Vikunja project with the kanban board
+  project: myproject             # Vikunja project with the kanban board
 
+# --- Repository: where the code lives --------------------------------------
 repo:
   type: github
   url: https://github.com/you/myproject
-  path: .                       # local checkout of this repository
-  branch: main                  # base branch
+  path: .                        # local checkout of this repository
+  branch: main                   # base branch
   token: ${GITHUB_TOKEN}
 
-build: make build               # compiles the code of a slot
-local_deploy: true              # build + run the branch when the agent finishes
-local_links: [.env, node_modules]   # git-ignored files shared with slots
-
-app_binary: ./myapp             # binary produced by `build`
-# gateway_command: tg run --config gateway.yaml   # default; set it if your app has no gateway
-
-slots:
-  count: 5
-  base_port: 8010               # slot i: base_port + 10·i (app on +1)
-  public_host: http://192.168.1.35
-
-agent:
-  model: claude-haiku-5-5
-  max_rework: 3
-
-webhook:
-  listen: ":8787"
-  public_url: http://192.168.1.35:8787
-
-ci-server:                      # optional
+# --- CI results (optional) --------------------------------------------------
+ci-server:
   type: forgejo
   url: http://forgejo.local:3000
   token: ${FORGEJO_TOKEN}
   repo: owner/myproject
 
+# --- Agent -------------------------------------------------------------------
+agent:
+  model: claude-haiku-5-5
+  max_rework: 3
+
+# --- Local deploy: each approved branch runs in a test slot -----------------
+local_deploy: true
+build: make build                # builds the code of a slot
+local_links:                     # git-ignored files shared with every slot
+  - .env
+  - node_modules
+
+slots:
+  count: 5
+  base_port: 8010                # slot i uses base_port + 10·i
+  public_host: http://192.168.1.35
+
+services:                        # processes started in every slot
+  - name: app
+    port: 1                      # offset from the slot's base port
+    command: ./myapp --port {port}
+  # - name: gateway
+  #   port: 0
+  #   public: true               # the slot URL points to this service
+  #   command: ./proxy --port {port} --upstream {app_port}
+
+# --- Webhook: board changes wake the loop immediately -----------------------
+webhook:
+  listen: ":8787"
+  public_url: http://192.168.1.35:8787
+
 timezone: Europe/Madrid
 ```
+
+**Services** are the processes each test slot starts. In `command` and `env` you can use:
+
+| Placeholder | Value |
+|---|---|
+| `{port}` | the port of this service in the slot (`base_port + 10·slot + port`) |
+| `{<name>_port}` | the port of another service, e.g. `{app_port}` |
+| `{slot}` | the slot number |
+| `{public_url}` | the public URL of the slot (the service marked `public: true`) |
+
+Any stack works: one service per process, with whatever command starts it. The factory only needs `build` to produce something runnable and `services` to say how to run it.
 
 **`factory.env`** (permissions `600`, never committed):
 

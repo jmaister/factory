@@ -58,12 +58,11 @@ func deployCommit(cfg *config.Config, t tickets.Tracker, task tickets.Task, sha,
 		return
 	}
 	i := pickSlot(cfg, records, ref)
-	gw, app := slotPorts(cfg, i)
 	url := slotURL(cfg, i)
 	dir := slotDir(cfg, i)
 
 	setPhase(fmt.Sprintf("desplegando %s en la ranura %d (%s)", ref, i, origin))
-	logf("%s: despliegue en la ranura %d iniciado (%s, commit %s, puertos %d/%d)", ref, i, origin, short, gw, app)
+	logf("%s: despliegue en la ranura %d iniciado (%s, commit %s, base %d)", ref, i, origin, short, slotBase(cfg, i))
 	defer setPhase("")
 
 	stopSlot(cfg, i)
