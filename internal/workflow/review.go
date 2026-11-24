@@ -95,8 +95,8 @@ func nextPatchTag(latest string) (string, error) {
 	return fmt.Sprintf("v%d.%d.%d", a, b, c+1), nil
 }
 
-// SyncReview mira las tareas de REVISIÓN: si el PR está mergeado pasan a APROBADO, se crea el tag
-// y se hace el deploy; si hay comentarios de code review nuevos, pasan a REWORK.
+// SyncReview mira las tareas de REVISIÓN: si el PR está mergeado despliega master y pasa la tarea a HECHO
+// cuando el CI del merge está en verde; si hay comentarios de code review nuevos, pasan a REWORK.
 func SyncReview(cfg *config.Config, t tickets.Tracker, host repos.Host, pid int64, logf func(string, ...any)) error {
 	board, err := t.Board(pid)
 	if err != nil {
@@ -129,14 +129,15 @@ func SyncReview(cfg *config.Config, t tickets.Tracker, host repos.Host, pid int6
 			continue
 		}
 		if info.Merged {
-			setPhase(fmt.Sprintf("merge del PR #%d detectado: desplegando master", number))
-			if err := moveTo(t, cfg, pid, task.ID, "approved"); err != nil {
-				logf("%s: no pude pasar a APROBADO: %v", ref, err)
-				continue
+			// Merge hecho (por ti en GitHub): desplegamos master una vez y la tarea pasa a HECHO
+			// cuando el CI del merge esté en verde.
+			if !hasCommentPrefix(cs, fmt.Sprintf("PR #%d mergeado", number)) {
+				_ = t.AddComment(task.ID, fmt.Sprintf("PR #%d mergeado.", number))
+				logf("%s: PR #%d mergeado", ref, number)
 			}
-			_ = t.AddComment(task.ID, fmt.Sprintf("PR #%d mergeado. Tarea aprobada.", number))
-			logf("%s: PR #%d mergeado → APROBADO", ref, number)
-			DeployAfterMerge(cfg, t, task, info.MergeSHA, logf)
+			setPhase(fmt.Sprintf("merge del PR #%d: desplegando master (%s)", number, ref))
+			ensureMergeDeploy(cfg, t, task, info.MergeSHA, cs, logf)
+			maybeFinishMerged(cfg, t, pid, task, info.MergeSHA, cs, logf)
 			continue
 		}
 
@@ -232,72 +233,42 @@ func SyncDone(cfg *config.Config, t tickets.Tracker, pid int64, logf func(string
 	}
 }
 
-// SyncApproved hace el merge de los PR de las tareas en APROBADO que todavía están abiertos.
-// Después sigue el mismo camino que un merge detectado: tag y despliegue.
-func SyncApproved(cfg *config.Config, t tickets.Tracker, host repos.Host, pid int64, logf func(string, ...any)) {
-	board, err := t.Board(pid)
-	if err != nil {
+// maybeFinishMerged pasa a HECHO una tarea con el PR mergeado cuando el CI del merge a master está en verde.
+// Sin ci-server configurado, basta con que el despliegue de master esté hecho.
+func maybeFinishMerged(cfg *config.Config, t tickets.Tracker, pid int64, task tickets.Task, mergeSHA string, cs []tickets.Comment, logf func(string, ...any)) {
+	if mergeSHA == "" {
 		return
 	}
-	col, err := columnFor(board, config.States["approved"])
-	if err != nil {
-		return
-	}
-	for _, task := range col.Tasks {
-		ref := refOf(task)
-		cs, err := t.Comments(task.ID)
-		if err != nil {
-			continue
+	if cfg.CI.Type != "forgejo" {
+		short := mergeSHA
+		if len(short) > 7 {
+			short = short[:7]
 		}
-		link, _, ok := lastPRLink(cs)
-		if !ok {
-			continue
+		if !hasCommentPrefix(cs, "Desplegado en local (master tras merge, commit "+short) {
+			return
 		}
-		owner, name, number, err := parsePRURL(link)
-		if err != nil {
-			continue
+	} else {
+		sum, err := ci.NewForgejo(cfg.CI.URL, cfg.CI.Token, cfg.CI.Repo).RunsFor(mergeSHA)
+		if err != nil || sum.State() != "success" {
+			return
 		}
-		info, err := host.PRInfo(owner, name, number)
-		if err == nil && info.Merged {
-			// Mergeado a mano: si falta el tag o el despliegue de master, los hacemos ahora.
-			ensureMergeDeploy(cfg, t, task, info.MergeSHA, cs, logf)
-			maybeFinishApproved(cfg, t, pid, task, info.MergeSHA, cs, logf)
-			continue
-		}
-		if err != nil || info.PRState != "open" {
-			continue
-		}
-		setPhase(fmt.Sprintf("haciendo merge del PR #%d en GitHub (%s)", number, ref))
-		if err := host.MergePR(owner, name, number); err != nil {
-			_ = t.AddComment(task.ID, "No pude hacer el merge del PR: "+err.Error()+"\nHazlo a mano en GitHub o revisa los checks requeridos.")
-			logf("%s: %v", ref, err)
-			continue
-		}
-		_ = t.AddComment(task.ID, fmt.Sprintf("PR #%d mergeado por la factory (tarea aprobada).", number))
-		logf("%s: PR #%d mergeado → tag y despliegue", ref, number)
-		setPhase(fmt.Sprintf("merge hecho: desplegando master (%s)", ref))
-		if merged, err := host.PRInfo(owner, name, number); err == nil {
-			DeployAfterMerge(cfg, t, task, merged.MergeSHA, logf)
-		}
-	}
-}
-
-// maybeFinishApproved pasa a HECHO una tarea aprobada cuando el merge a master está en verde en Forgejo
-// y su despliegue en local de master se completó.
-func maybeFinishApproved(cfg *config.Config, t tickets.Tracker, pid int64, task tickets.Task, mergeSHA string, cs []tickets.Comment, logf func(string, ...any)) {
-	if cfg.CI.Type != "forgejo" || mergeSHA == "" {
-		return
-	}
-	sum, err := ci.NewForgejo(cfg.CI.URL, cfg.CI.Token, cfg.CI.Repo).RunsFor(mergeSHA)
-	if err != nil || sum.State() != "success" {
-		return
 	}
 	if err := moveTo(t, cfg, pid, task.ID, "done"); err != nil {
 		logf("%s: no pude pasar a HECHO: %v", refOf(task), err)
 		return
 	}
-	_ = t.AddComment(task.ID, "Merge a master en verde en Forgejo: tarea pasada a HECHO automáticamente.")
+	_ = t.AddComment(task.ID, "Merge a master terminado y desplegado: tarea pasada a HECHO automáticamente.")
 	logf("%s: merge a master OK → HECHO", refOf(task))
+}
+
+// hasCommentPrefix indica si algún comentario de la tarea empieza por ese texto.
+func hasCommentPrefix(cs []tickets.Comment, prefix string) bool {
+	for _, c := range cs {
+		if strings.HasPrefix(tickets.PlainComment(c.Comment), prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureMergeDeploy despliega master si la tarea aún no lo tiene (merge hecho fuera de la factory).
@@ -310,9 +281,16 @@ func ensureMergeDeploy(cfg *config.Config, t tickets.Tracker, task tickets.Task,
 		short = short[:7]
 	}
 	for _, c := range cs {
-		if strings.Contains(tickets.PlainComment(c.Comment), "Desplegado en local (master tras merge, commit "+short) {
+		text := tickets.PlainComment(c.Comment)
+		if strings.Contains(text, "Desplegado en local (master tras merge, commit "+short) {
 			return
+		}
+		if strings.HasPrefix(text, "Despliegue local no completado (master tras merge") {
+			return // ya falló: no se reintenta en cada vuelta
 		}
 	}
 	DeployAfterMerge(cfg, t, task, mergeSHA, logf)
 }
+
+// mergeFailedMarker empieza el comentario que deja la factory cuando un merge falla.
+const mergeFailedMarker = "No pude hacer el merge del PR"

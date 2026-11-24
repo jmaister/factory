@@ -16,25 +16,27 @@ import (
 
 // TaskView es una tarea con lo que el TUI necesita mostrar.
 type TaskView struct {
-	Task        tickets.Task
-	State       string              // clave lógica (draft, todo, in_progress, review, rework, approved, done)
-	Column      string              // título de la columna
-	PRURL       string              // último PR publicado (si hay)
-	Session     string              // nombre de la sesión de Claude (Remote Control)
-	Screen      string              // nombre de la sesión de screen
-	Last        string              // último comentario (texto plano)
-	Comments    int                 // número de comentarios
-	URL         string              // URL de la tarea en Vikunja
-	PRState     string              // open, merged o closed ("" si no hay PR o no se pudo leer)
-	CI          *repos.CheckSummary // estado de los checks del PR (nil si no hay PR abierto o no se pudo leer)
-	CIErr       string              // motivo si no se pudo leer el CI
-	Forgejo     *ci.Summary         // runs de Forgejo Actions del último commit del PR (nil si no hay ci-server o PR abierto)
-	ForgejoErr  string              // motivo si no se pudieron leer los runs de Forgejo
-	AllComments []CommentView       // todos los comentarios, en orden cronológico
-	SlotURL     string              // URL de la ranura donde está desplegada ("" si no lo está)
-	SlotIdx     int                 // índice de la ranura (-1 si no está desplegada)
-	SlotDir     string              // carpeta de la ranura de test ("" si no está desplegada)
-	Worktree    string              // worktree de la tarea (agente), si existe
+	Task         tickets.Task
+	State        string              // clave lógica (draft, todo, in_progress, review, rework, done)
+	Column       string              // título de la columna
+	PRURL        string              // último PR publicado (si hay)
+	Session      string              // nombre de la sesión de Claude (Remote Control)
+	Screen       string              // nombre de la sesión de screen
+	Last         string              // último comentario (texto plano)
+	Comments     int                 // número de comentarios
+	URL          string              // URL de la tarea en Vikunja
+	Labels       []string            // etiquetas (tags) de la tarea en Vikunja
+	PRState      string              // open, merged o closed ("" si no hay PR o no se pudo leer)
+	CI           *repos.CheckSummary // estado de los checks del PR (nil si no hay PR abierto o no se pudo leer)
+	CIErr        string              // motivo si no se pudo leer el CI
+	Forgejo      *ci.Summary         // runs de Forgejo Actions del último commit del PR (nil si no hay ci-server o PR abierto)
+	ForgejoErr   string              // motivo si no se pudieron leer los runs de Forgejo
+	AllComments  []CommentView       // todos los comentarios, en orden cronológico
+	SlotURL      string              // URL de la ranura donde está desplegada ("" si no lo está)
+	SlotIdx      int                 // índice de la ranura (-1 si no está desplegada)
+	SlotDir      string              // carpeta de la ranura de test ("" si no está desplegada)
+	Worktree     string              // worktree de la tarea (agente), si existe
+	SessionAlive bool                // la sesión de Claude de la tarea sigue en marcha
 }
 
 // stateOf devuelve la clave lógica de un título de columna.
@@ -72,6 +74,9 @@ func Snapshot(cfg *config.Config) ([]TaskView, error) {
 				Screen:  runner.SessionName(refOf(task)),
 				URL:     t.TaskURL(task.ID),
 			}
+			if ls, err := t.Labels(task.ID); err == nil {
+				v.Labels = ls
+			}
 			if cs, err := t.Comments(task.ID); err == nil {
 				v.Comments = len(cs)
 				if len(cs) > 0 {
@@ -101,6 +106,7 @@ func Snapshot(cfg *config.Config) ([]TaskView, error) {
 	slots := DeployedSlots(cfg)
 	for i := range views {
 		wt := filepath.Join(cfg.StateDir(), "worktrees", strings.ToLower(refOf(views[i].Task)))
+		views[i].SessionAlive = runner.SessionAlive(refOf(views[i].Task))
 		if _, err := os.Stat(wt); err == nil {
 			views[i].Worktree = wt
 		}
@@ -149,19 +155,13 @@ func Guide(v TaskView) (headline string, steps []string) {
 			[]string{
 				"Revisa el PR: " + pr,
 				"Para pedir cambios: deja comentarios de code review en GitHub, o escribe en Vikunja y mueve la tarea a 🔁 REWORK.",
-				"Para aprobar: haz merge del PR en GitHub. La factory pasa la tarea a 👍 APROBADO, crea el tag y ejecuta build y run.",
+				"Para terminar: haz merge del PR en GitHub. La factory despliega master y ejecuta build y run.",
 			}
 	case "rework":
 		return "Cambios pedidos. La factory retomará la sesión en su próximo ciclo.",
 			[]string{
 				"No hace falta nada.",
 				"Si quieres seguir la conversación, usa la sesión «" + v.Session + "» (Remote Control).",
-			}
-	case "approved":
-		return "Merge hecho. La factory ha creado el tag y ejecutado build y run.",
-			[]string{
-				"Revisa los comentarios de la tarea: tag, build y run.",
-				"Cuando todo esté bien, muévela a ✅ HECHO.",
 			}
 	case "done":
 		return "Tarea terminada.", []string{"No hace falta nada."}
@@ -225,7 +225,7 @@ func ciGuide(v TaskView) (string, []string, bool) {
 	default:
 		return fmt.Sprintf("Build de Forgejo correcto (run #%d, %s). PR listo para revisar.", last.Index, last.Workflow),
 			[]string{
-				"Revisa el PR y, si está bien, haz merge en GitHub: la factory pasará la tarea a 👍 APROBADO y desplegará en local.",
+				"Revisa el PR y, si está bien, haz merge en GitHub: la factory desplegará master en local.",
 				"Para pedir cambios: deja comentarios de code review en GitHub, o escribe en Vikunja y mueve la tarea a 🔁 REWORK.",
 			}, true
 	}

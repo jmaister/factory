@@ -35,10 +35,10 @@ func spinTick() tea.Cmd {
 }
 
 // Orden de las columnas en el tablero (y de las secciones de la lista).
-var columnOrder = []string{"draft", "todo", "in_progress", "review", "rework", "approved", "done"}
+var columnOrder = []string{"draft", "todo", "in_progress", "review", "rework", "done"}
 
 // Etapas del pipeline para la barra de progreso (rework vuelve a la etapa del agente).
-var stages = []string{"Borrador", "Cola", "Agente", "Revisión", "Aprobado", "Hecho"}
+var stages = []string{"Borrador", "Cola", "Agente", "Revisión", "Hecho"}
 
 var (
 	headerStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("62")).Padding(0, 1)
@@ -55,6 +55,7 @@ var (
 )
 
 type snapshotMsg struct {
+	slots    []workflow.SlotStatus
 	views    []workflow.TaskView
 	err      error
 	at       time.Time
@@ -84,6 +85,18 @@ type WebhookMsg struct {
 // WebhookInfoMsg actualiza el estado del receptor de webhooks.
 type WebhookInfoMsg string
 
+// ElabDoneMsg indica que terminó la elaboración de una tarea con Claude.
+type ElabDoneMsg struct {
+	Ref string
+	Err error
+}
+
+// YoloDoneMsg indica que terminó el intento de marcar una tarea YOLO.
+type YoloDoneMsg struct {
+	Ref string
+	Err error
+}
+
 // LoopDoneMsg indica que el bucle ha terminado.
 type LoopDoneMsg struct{ Err error }
 
@@ -109,10 +122,13 @@ type Model struct {
 	deployFn func(ref string) tea.Cmd
 	busyRef  string // tarea del despliegue manual en curso
 
-	showLog        bool     // vista de log (tecla l)
-	showComments   bool     // vista de comentarios de la tarea (tecla c)
-	showPalette    bool     // vista de prueba de colores (tecla t)
-	showHelp       bool     // vista de ayuda (tecla h)
+	showLog        bool                 // vista de log (tecla l)
+	showComments   bool                 // vista de comentarios de la tarea (tecla c)
+	showPalette    bool                 // vista de prueba de colores (tecla t)
+	showHelp       bool                 // vista de ayuda (tecla h)
+	logf           func(string, ...any) // registro de actividad (log y pantalla)
+	showSlots      bool                 // vista de ranuras de test (tecla s)
+	slots          []workflow.SlotStatus
 	commentsScroll int      // primera línea visible de la vista de comentarios
 	logLines       []string // últimas líneas de actividad
 	logScroll      int      // líneas subidas desde el final
@@ -134,7 +150,7 @@ func New(cfg *config.Config) Model {
 func (m Model) fetch() tea.Cmd {
 	return func() tea.Msg {
 		views, err := workflow.Snapshot(m.cfg)
-		return snapshotMsg{views: views, err: err, at: time.Now()}
+		return snapshotMsg{views: views, err: err, at: time.Now(), slots: workflow.SlotStatuses(m.cfg)}
 	}
 }
 
@@ -153,6 +169,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case snapshotMsg:
+		m.slots = msg.slots
 		m.loading = false
 		m.err = msg.err
 		if msg.err == nil {
@@ -179,6 +196,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinTickMsg:
 		m.spin = (m.spin + 1) % len(spinFrames)
 		return m, spinTick()
+	case ElabDoneMsg:
+		if msg.Err != nil {
+			m.lastLog = "elaboración de " + msg.Ref + ": " + msg.Err.Error()
+		} else {
+			m.lastLog = "elaboración de " + msg.Ref + " lista (descripción ampliada)"
+		}
+		return m, m.fetch()
+	case YoloDoneMsg:
+		if msg.Err != nil {
+			m.lastLog = "YOLO " + msg.Ref + ": " + msg.Err.Error()
+		} else {
+			m.lastLog = "YOLO " + msg.Ref + ": marcada y pasada a TODO"
+		}
+		return m, m.fetch()
 	case DeployDoneMsg:
 		m.busy = false
 		if msg.Err != nil {
@@ -204,6 +235,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showComments = false
 			m.showPalette = false
 			m.showHelp = false
+			m.showSlots = false
+		case "s":
+			m.showSlots = !m.showSlots
+			m.showLog, m.showComments, m.showPalette, m.showHelp = false, false, false, false
 		case "h":
 			m.showHelp = !m.showHelp
 		case "t":
@@ -257,6 +292,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.detailScroll = 0
 			}
 		case "d":
+			if len(m.views) > 0 && m.views[m.cursor].State == "draft" {
+				m.lastLog = "desplegar solo tareas con rama (" + refOf(m.views[m.cursor]) + " está en DRAFT)"
+				break
+			}
 			if m.busy || len(m.views) == 0 || m.deployFn == nil {
 				break
 			}
@@ -264,6 +303,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			m.busyRef = ref
 			return m, m.deployFn(ref)
+		case "e":
+			if len(m.views) == 0 {
+				break
+			}
+			v := m.views[m.cursor]
+			if v.State != "draft" {
+				m.lastLog = "elaborar solo se puede desde DRAFT (" + refOf(v) + " está en " + v.Column + ")"
+				break
+			}
+			ref := refOf(v)
+			cfg := m.cfg
+			logf := m.logf
+			return m, func() tea.Msg {
+				err := workflow.Elaborate(cfg, ref, logf)
+				return ElabDoneMsg{Ref: ref, Err: err}
+			}
+		case "y":
+			if len(m.views) == 0 {
+				break
+			}
+			v := m.views[m.cursor]
+			if v.State != "draft" {
+				m.lastLog = "YOLO solo se puede marcar desde DRAFT (" + refOf(v) + " está en " + v.Column + ")"
+				break
+			}
+			ref := refOf(v)
+			cfg := m.cfg
+			return m, func() tea.Msg { return YoloDoneMsg{Ref: ref, Err: workflow.MarkYolo(cfg, ref)} }
 		case "r":
 			m.loading = true
 			return m, m.fetch()
@@ -305,11 +372,13 @@ func (m Model) View() string {
 		return "Ventana demasiado pequeña"
 	}
 	header := headerStyle.Render(fmt.Sprintf("Factory · %s", m.cfg.Tickets.Project)) + "  " + dimStyle.Render(m.statusLine())
-	footer := lipgloss.NewStyle().MaxWidth(m.width).Render(footerText(m.showLog, m.showComments, m.showPalette, m.showHelp))
+	footer := lipgloss.NewStyle().MaxWidth(m.width).Render(footerText(m.showLog, m.showComments, m.showPalette, m.showHelp, m.showSlots))
 	body := m.height - 4 // cabecera, dos líneas de estado y footer
 
 	var content string
-	if m.showHelp {
+	if m.showSlots {
+		content = m.panel("Ranuras de test", m.renderSlots(body-2, m.width-2), m.width, body, true)
+	} else if m.showHelp {
 		content = m.panel("Ayuda", renderHelp(), m.width, body, true)
 	} else if m.showPalette {
 		content = m.panel("Paleta de colores", renderPalette(), m.width, body, true)
@@ -332,9 +401,11 @@ func (m Model) View() string {
 type hint struct{ key, action string }
 
 // footerText lista los atajos disponibles en la vista actual, con la tecla resaltada.
-func footerText(showLog, showComments, showPalette, showHelp bool) string {
+func footerText(showLog, showComments, showPalette, showHelp, showSlots bool) string {
 	var hints []hint
 	switch {
+	case showSlots:
+		hints = []hint{{"s/esc", "volver"}, {"q", "salir"}}
 	case showHelp:
 		hints = []hint{{"h/esc", "volver"}, {"q", "salir"}}
 	case showPalette:
@@ -344,7 +415,7 @@ func footerText(showLog, showComments, showPalette, showHelp bool) string {
 	case showLog:
 		hints = []hint{{"↑/↓", "desplazar"}, {"l/esc", "volver"}, {"q", "salir"}}
 	default:
-		hints = []hint{{"Tab", "foco"}, {"↑/↓", "mover"}, {"d", "desplegar en local"}, {"c", "contenido"}, {"r", "refrescar"}, {"l", "log"}, {"t", "colores"}, {"h", "ayuda"}, {"q", "salir"}}
+		hints = []hint{{"Tab", "foco"}, {"↑/↓", "mover"}, {"d", "desplegar en local"}, {"c", "contenido"}, {"r", "refrescar"}, {"l", "log"}, {"t", "colores"}, {"e", "elaborar"}, {"y", "YOLO a TODO"}, {"s", "ranuras"}, {"h", "ayuda"}, {"q", "salir"}}
 	}
 	parts := make([]string, 0, len(hints))
 	for _, h := range hints {
@@ -464,7 +535,16 @@ func (m Model) renderList(rows, width int) string {
 			if v.SlotIdx >= 0 {
 				tag = fmt.Sprintf("R%d  ", v.SlotIdx)
 			}
-			row := truncate(fmt.Sprintf("%s%-10s %s%s", mark, refOf(v), tag, v.Task.Title), width)
+			yolo := "     "
+			if hasLabel(v.Labels, "yolo") {
+				if i == m.cursor {
+					// En la fila seleccionada va sin color: un reset interno cortaría el fondo de la selección.
+					yolo = "YOLO "
+				} else {
+					yolo = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("208")).Render("YOLO ")
+				}
+			}
+			row := truncate(fmt.Sprintf("%s%-10s %s%s%s", mark, refOf(v), tag, yolo, v.Task.Title), width)
 			if i == m.cursor {
 				cursorLine = len(lines)
 				lines = append(lines, selectedStyle.Render(padRight(row, width)))
@@ -497,6 +577,15 @@ func (m Model) renderDetails(rows, width int) string {
 	fmt.Fprintf(&b, "%s %s\n", labelStyle.Render("Estado:"), v.Column)
 	fmt.Fprintf(&b, "%s %s\n", labelStyle.Render("Progreso:"), progressBar(v.State, width-12))
 	fmt.Fprintf(&b, "%s %s\n", labelStyle.Render("Vikunja:"), link(v.URL))
+	tags := dimStyle.Render("(ninguno)")
+	if len(v.Labels) > 0 {
+		pills := make([]string, 0, len(v.Labels))
+		for _, l := range v.Labels {
+			pills = append(pills, tagPill(l))
+		}
+		tags = strings.Join(pills, " ")
+	}
+	fmt.Fprintf(&b, "%s %s\n", labelStyle.Render("Tags:"), tags)
 	if v.PRURL != "" {
 		fmt.Fprintf(&b, "%s %s %s\n", labelStyle.Render("PR:"), link(v.PRURL), prStateLabel(v.PRState))
 	}
@@ -510,10 +599,14 @@ func (m Model) renderDetails(rows, width int) string {
 	} else if v.PRURL != "" && v.PRState == "open" {
 		fmt.Fprintf(&b, "%s %s\n", labelStyle.Render("Forgejo:"), forgejoSummary(v))
 	}
-	fmt.Fprintf(&b, "%s %s  (screen: %s)\n", labelStyle.Render("Sesión:"), v.Session, v.Screen)
+	estado := dimStyle.Render("cerrada")
+	if v.SessionAlive {
+		estado = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("en marcha")
+	}
+	fmt.Fprintf(&b, "%s %s  (screen: %s) %s\n", labelStyle.Render("Sesión:"), v.Session, v.Screen, estado)
 	wt := v.Worktree
 	if wt == "" {
-		wt = "(no existe: se crea al empezar la tarea y se borra al llegar a HECHO)"
+		wt = "(no existe: se crea al empezar la tarea y se borra al cerrar la sesión o al llegar a HECHO)"
 	}
 	fmt.Fprintf(&b, "%s %s\n", labelStyle.Render("Worktree de la tarea:"), wt)
 	if v.SlotURL != "" {
@@ -540,7 +633,7 @@ func (m Model) renderDetails(rows, width int) string {
 
 // progressBar dibuja el avance de la tarea por el pipeline: segmentos llenos hasta su etapa.
 func progressBar(state string, width int) string {
-	stage := map[string]int{"draft": 0, "todo": 1, "in_progress": 2, "review": 3, "rework": 2, "approved": 4, "done": 5}[state]
+	stage := map[string]int{"draft": 0, "todo": 1, "in_progress": 2, "review": 3, "rework": 2, "done": 4}[state]
 	n := len(stages)
 	barW := max(n, width-14) // dejamos sitio para la etiqueta " 4/6 Revisión"
 	seg := max(1, barW/n)
@@ -598,7 +691,7 @@ func (m Model) statusBar() string {
 	if m.eventCount > 0 {
 		wh = fmt.Sprintf("webhook: %s · último %s hace %s · %d avisos", m.lastEvent, m.lastEventAt.Format("15:04:05"), ago(m.lastEventAt), m.eventCount)
 	}
-	bucle := "bucle: " + m.lastLog
+	bucle := "bucle: " + firstLine(m.lastLog)
 	if m.lastLog == "" {
 		bucle = "bucle: esperando"
 	}
@@ -668,6 +761,7 @@ func Run(cfg *config.Config, opts RunOptions) error {
 	}
 	var p *tea.Program
 	logf := fileLogger(cfg, func(line string) { p.Send(LogMsg(line)) })
+	model.logf = logf
 	model.deployFn = func(ref string) tea.Cmd {
 		return func() tea.Msg {
 			err := workflow.DeployTask(cfg, ref, logf)
@@ -941,9 +1035,8 @@ func renderHelp() string {
 		{"👀 REVISIÓN", "🔁 REWORK", bot, "CI rojo o comentarios de code review en GitHub"},
 		{"👀 REVISIÓN", "🔁 REWORK", hand, "escribes en Vikunja y mueves la tarea"},
 		{"🔁 REWORK", "🤖 EN CURSO", bot, "retoma la misma sesión con el feedback"},
-		{"👀 REVISIÓN", "👍 APROBADO", hand, "haces merge en GitHub (o mueves con el PR abierto)"},
-		{"👍 APROBADO", "✅ HECHO", bot, "tag y build/run en una ranura de test"},
-		{"👍 APROBADO", "✅ HECHO", hand, "pasas la tarea a HECHO cuando esté bien"},
+		{"👀 REVISIÓN", "✅ HECHO", hand, "haces merge del PR en GitHub"},
+		{"👀 REVISIÓN", "✅ HECHO", bot, "despliega master y pasa a HECHO cuando el CI del merge está en verde"},
 		{"✅ HECHO", "", bot, "libera la ranura y cierra la sesión de Claude"},
 	}
 	var b strings.Builder
@@ -959,7 +1052,7 @@ func renderHelp() string {
 		}
 		fmt.Fprintf(&b, "%s %-28s %s\n", s.who, flow, s.text)
 	}
-	b.WriteString("\n" + dimStyle.Render("d desplegar · c contenido · l log · t colores"))
+	b.WriteString("\n" + dimStyle.Render("d desplegar · e elaborar · y YOLO a TODO · c contenido · l log · t colores"))
 	return b.String()
 }
 
@@ -970,4 +1063,80 @@ func stripState(s string) string {
 		return strings.Join(f, " ")
 	}
 	return strings.Join(f[1:], " ")
+}
+
+// renderSlots muestra cada ranura de test: qué tarea tiene desplegada, desde cuándo y si sigue en marcha.
+func (m Model) renderSlots(rows, width int) string {
+	titles := map[string]string{}
+	for _, v := range m.views {
+		titles[refOf(v)] = v.Task.Title
+	}
+	var lines []string
+	for _, s := range m.slots {
+		head := labelStyle.Render(fmt.Sprintf("Ranura %d", s.Index)) + "  " + dimStyle.Render(s.URL)
+		lines = append(lines, head)
+		if s.Ref == "" {
+			lines = append(lines, dimStyle.Render("   libre"), "")
+			continue
+		}
+		state := errStyle.Render("parada")
+		if s.Alive {
+			state = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("en marcha")
+		}
+		lines = append(lines, fmt.Sprintf("   %s  %s  %s", s.Ref, truncate(titles[s.Ref], 50), state))
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("   commit %s · desplegada %s", shortSHA(s.SHA), s.At.In(time.Local).Format("2006-01-02 15:04"))), "")
+	}
+	if len(lines) == 0 {
+		return dimStyle.Render(" (sin ranuras configuradas)")
+	}
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
+	}
+	return s
+}
+
+// firstLine devuelve solo la primera línea de un texto (los errores de git traen varias).
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// tagPalette son los fondos de las pills de etiquetas; "yolo" siempre va en naranja.
+var tagPalette = []string{"39", "141", "42", "209", "81", "177", "220"}
+
+// tagPill dibuja una etiqueta como una pill: texto oscuro sobre un fondo de color.
+func tagPill(label string) string {
+	bg := tagPalette[0]
+	if label == "yolo" {
+		bg = "208"
+	} else {
+		h := 0
+		for _, c := range label {
+			h = h*31 + int(c)
+		}
+		if h < 0 {
+			h = -h
+		}
+		bg = tagPalette[h%len(tagPalette)]
+	}
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color(bg)).Render(" " + label + " ")
+}
+
+// hasLabel indica si la lista contiene esa etiqueta.
+func hasLabel(labels []string, name string) bool {
+	for _, l := range labels {
+		if l == name {
+			return true
+		}
+	}
+	return false
 }

@@ -21,7 +21,6 @@ var States = map[string]string{
 	"in_progress": "🤖 EN CURSO",
 	"review":      "👀 REVISIÓN",
 	"rework":      "🔁 REWORK",
-	"approved":    "👍 APROBADO",
 	"done":        "✅ HECHO",
 }
 

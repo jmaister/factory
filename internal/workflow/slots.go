@@ -224,3 +224,38 @@ func startSlot(cfg *config.Config, i int) error {
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// SlotStatus es el estado de una ranura de test para la pantalla de ranuras.
+type SlotStatus struct {
+	Index int
+	Ref   string // tarea desplegada ("" si está libre)
+	SHA   string
+	At    time.Time
+	URL   string
+	Alive bool // su sesión de screen (app y gateway) sigue en marcha
+}
+
+// SlotStatuses devuelve el estado de todas las ranuras, de la 0 a la última.
+func SlotStatuses(cfg *config.Config) []SlotStatus {
+	records, _ := loadSlots(cfg)
+	out := make([]SlotStatus, 0, cfg.Slots.Count)
+	for i := 0; i < cfg.Slots.Count; i++ {
+		st := SlotStatus{Index: i, URL: slotURL(cfg, i), Alive: screenSessionAlive(slotSession(cfg, i))}
+		if rec, ok := records[i]; ok {
+			st.Ref, st.SHA, st.At = rec.Ref, rec.SHA, rec.At
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+// screenSessionAlive indica si existe una sesión de screen con ese nombre.
+func screenSessionAlive(name string) bool {
+	out, _ := exec.Command("screen", "-ls").CombinedOutput()
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(line); len(f) > 0 && strings.HasSuffix(f[0], "."+name) {
+			return true
+		}
+	}
+	return false
+}

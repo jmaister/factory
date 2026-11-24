@@ -30,16 +30,15 @@ Se crea en GitHub: Settings → Developer settings → Fine-grained tokens. Limi
 |---|---|---|
 | Metadata | Read | Obligatorio por GitHub: info básica del repo |
 | Contents | **Read and write** | Hacer push de las ramas de las tareas y crear tags (`git/refs`) |
-| Pull requests | **Read and write** | Crear el PR, leer su estado y **hacer merge** (`pulls/{n}/merge`) |
+| Pull requests | **Read and write** | Crear el PR y leer su estado (la factory no hace merges) |
 | Commit statuses | Read | (opcional) estados de commit |
 | Checks | Read | (opcional) checks de GitHub Actions |
 | Actions | Read | (opcional) número de runs de GitHub Actions |
 
 Puntos a comprobar:
 
-- **Pull requests: Write** es necesario para que la factory haga el merge cuando se mueve una tarea a 👍 APROBADO. Hasta ahora no se ha verificado con este token, porque no hemos hecho ningún merge automático todavía.
+- **Pull requests: Write** es necesario para que la factory cree los PRs. El merge lo haces tú en GitHub: la factory no hace merges.
 - Sin **Commit statuses** y **Checks** no se pueden leer los checks de commit; por eso la factory usa `mergeable_state` del PR para el estado de GitHub, y los runs de Forgejo para el CI real.
-- Si el repo tiene **branch protection** que exige revisión o checks, el merge automático puede fallar: la factory lo deja como comentario en la tarea.
 
 ## FORGEJO_TOKEN
 

@@ -12,14 +12,11 @@ flowchart TD
     E -->|automático: sin cambios tras la sesión| D
     R -->|automático: CI rojo| W[🔁 REWORK]
     R -->|automático: comentarios de code review en GitHub| W
-    R -->|manual: merge en GitHub → automático| A[👍 APROBADO]
+    R -->|manual: haces merge en GitHub → automático| H
     R -->|manual: mover a REWORK con comentario| W
     W -->|automático: retoma la sesión con el feedback| E
     W -->|automático: rondas agotadas| D
-    A -->|manual: mover a APROBADO con PR abierto → la factory hace merge| A2[merge + tag + build/run local]
-    A -->|automático: merge detectado| A2
-    A2 --> H[✅ HECHO]
-    H -->|manual: pasarla tú| H
+    H[✅ HECHO]
     H -.->|automático: para la ranura, cierra la sesión de Claude y borra el worktree| H
 ```
 
@@ -41,9 +38,9 @@ flowchart TD
 | Pedir cambios en Vikunja | **Manual** | Escribes el comentario y mueves la tarea a 🔁 REWORK |
 | REWORK | Automático | Retoma la misma sesión de Claude con el feedback |
 | Rondas de REWORK agotadas | Automático | La tarea vuelve a 📝 DRAFT y pide tu decisión (límite `max_rework`) |
-| Merge del PR | **Manual** o automático | Haces merge en GitHub → APROBADO automático. O mueves la tarea a 👍 APROBADO con el PR abierto → la factory hace el merge |
-| Tag y despliegue tras el merge | Automático | Crea `vX.Y.Z+1` y compila/arranca master en una ranura |
-| APROBADO → HECHO | **Manual** | Lo pasas tú |
+| Merge del PR | **Manual** | Lo haces tú en GitHub. La factory lo detecta solo |
+| Despliegue de master tras el merge | Automático | Compila y arranca master en una ranura de test |
+| Paso a HECHO | Automático | Cuando el CI del merge a master está en verde (sin ci-server, al terminar el despliegue) |
 | Liberar la ranura al llegar a HECHO | Automático | Para la aplicación, cierra la sesión de Claude y borra el worktree. La conversación queda en disco |
 | Desplegar a mano una rama | **Manual** | Tecla `d` en el TUI, o `factory deploy ACA-n` |
 | Ver el estado | **Manual** | `factory start` (TUI), `factory list` |

@@ -64,8 +64,6 @@ type Host interface {
 	// ReviewsSince devuelve los comentarios de code review (inline, reviews con texto y comentarios
 	// generales) creados después de `since`.
 	ReviewsSince(owner, name string, number int, since time.Time) ([]ReviewItem, error)
-	// MergePR hace merge del PR (merge commit). Devuelve error si GitHub no lo permite.
-	MergePR(owner, name string, number int) error
 	// FindPR devuelve la URL del PR abierto de `head` hacia `base`, si existe.
 	FindPR(owner, name, head, base string) (string, bool, error)
 	// Token devuelve el token para autenticar operaciones git (push).
@@ -305,39 +303,6 @@ func (g *GitHub) FindPR(owner, name, head, base string) (string, bool, error) {
 		return "", false, nil
 	}
 	return prs[0].HTMLURL, true, nil
-}
-
-func (g *GitHub) MergePR(owner, name string, number int) error {
-	payload, err := json.Marshal(map[string]string{"merge_method": "merge"})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequest(http.MethodPut, fmt.Sprintf("%s/repos/%s/%s/pulls/%d/merge", g.api, owner, name, number), strings.NewReader(string(payload)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+g.token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		var e struct {
-			Message string `json:"message"`
-		}
-		_ = json.Unmarshal(data, &e)
-		msg := strings.TrimSpace(e.Message)
-		if msg == "" {
-			msg = strings.TrimSpace(string(data))
-		}
-		return fmt.Errorf("merge del PR #%d: HTTP %d: %s", number, resp.StatusCode, msg)
-	}
-	return nil
 }
 
 // isBotComment reconoce comentarios automáticos (informes de cobertura, etc.) que no son code review.

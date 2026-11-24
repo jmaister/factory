@@ -3,7 +3,7 @@
 **A software factory driven by your ticket board.** Create a task, move it to *TODO*, and an AI agent (Claude Code) analyses it, implements it, tests it, opens a pull request and deploys it to a local test environment. You review in the board and on GitHub; the factory does the rest.
 
 ```
-📝 DRAFT ──you──▶ 📥 TODO ──auto──▶ 🤖 IN PROGRESS ──auto──▶ 👀 REVIEW ──you (merge)──▶ 👍 APPROVED ──auto──▶ ✅ DONE
+📝 DRAFT ──you──▶ 📥 TODO ──auto──▶ 🤖 IN PROGRESS ──auto──▶ 👀 REVIEW ──you (merge)──▶ ✅ DONE (auto, when the master CI is green)
                                          ▲                       │
                                          └──── 🔁 REWORK ◀───────┘ (auto on CI failure or review comments)
 ```
@@ -104,7 +104,7 @@ agent:
   model: claude-haiku-5-5
   max_rework: 3
 
-# --- Local deploy: each approved branch runs in a test slot -----------------
+# --- Local deploy: each branch runs in a test slot ---------------------------
 local_deploy: true
 build: make build                # builds the code of a slot
 local_links:                     # git-ignored files shared with every slot
@@ -155,7 +155,7 @@ TEST_ADMIN_USER=admin         # optional: shown in the detail panel
 TEST_ADMIN_PASSWORD=...
 ```
 
-The board needs one column per state: `📝 DRAFT`, `📥 TODO`, `🤖 EN CURSO`, `👀 REVISIÓN`, `🔁 REWORK`, `👍 APROBADO`, `✅ HECHO` (titles are fixed in `internal/config`).
+The board needs one column per state: `📝 DRAFT`, `📥 TODO`, `🤖 EN CURSO`, `👀 REVISIÓN`, `🔁 REWORK`, `✅ HECHO` (titles are fixed in `internal/config`).
 
 Check the setup:
 
@@ -183,7 +183,7 @@ Typical flow:
 1. Write the task in Vikunja (DRAFT) and move it to TODO.
 2. Open the agent session from the Claude app (Remote Control, session `factory ACA-7`) if you want to answer questions.
 3. When CI is green the task moves to REVIEW. Open the PR link from the detail panel, test the slot URL, review.
-4. Merge on GitHub (or move the task to APPROVED with the PR open). The factory merges, deploys master and moves the task to DONE when the merge CI is green.
+4. Merge the PR on GitHub. The factory deploys master and moves the task to DONE when the merge CI is green.
 
 Full state machine, who triggers each step, and what is automatic: [spec/workflow.md](spec/workflow.md).
 

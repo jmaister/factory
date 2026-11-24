@@ -229,3 +229,27 @@ func DetachedWorktree(repoDir, dir, sha string, links []string) error {
 	}
 	return nil
 }
+
+// RemoteBranchExists indica si la rama existe en origin (según la última búsqueda).
+func RemoteBranchExists(repoDir, branch string) bool {
+	_, err := git(repoDir, "rev-parse", "--verify", "--quiet", "origin/"+branch)
+	return err == nil
+}
+
+// YoloPrompt es el mensaje inicial de una tarea YOLO: se hace a sí mismo las preguntas de grilling,
+// responde con la mejor opción y lo deja anotado; solo para si algo es imposible de decidir.
+func YoloPrompt(identifier, title, description, questionsPath, decisionsPath string) string {
+	return fmt.Sprintf(`Tarea %s (modo YOLO, sin intervención humana): %s
+
+Descripción:
+%s
+
+Trabaja de principio a fin sin esperar respuestas de nadie.
+1. Antes de implementar, hazte tú las preguntas que harías en una sesión de grilling sobre esta tarea (alcance, casos límite, datos, UX, compatibilidad).
+2. Responde cada una tú mismo con la opción más razonable con los datos que tienes. Anótalas en %s con este formato: pregunta, decisión, motivo.
+3. Implementa el cambio mínimo que cumpla la tarea y añade o actualiza tests; ejecuta los tests y el linter del proyecto y corrige lo que falle por tu cambio.
+4. No hagas commit ni push: lo hará la factory cuando termines.
+5. Termina con un resumen breve: qué cambiaste y qué no pudiste hacer.
+
+Solo si hay algo imposible de decidir con los datos disponibles, escribe la pregunta (con la opción por defecto que tomarías) en %s y termina tu turno sin tocar nada más.`, identifier, title, PlainText(description), decisionsPath, questionsPath)
+}

@@ -51,7 +51,6 @@ func Start(ctx context.Context, cfg *config.Config, opts StartOptions) error {
 			logf("sincronizar REVISIÓN: %v", err)
 		}
 		SyncDone(cfg, t, pid, logf)
-		SyncApproved(cfg, t, host, pid, logf)
 		task, state, ok, err := nextWork(t, cfg, pid)
 		if err != nil {
 			return err
@@ -152,6 +151,7 @@ func processTask(ctx context.Context, cfg *config.Config, t tickets.Tracker, hos
 	branch := "task/" + strings.ToLower(ref)
 	rework := state == "rework"
 	logf("%s: empiezo (%s, desde %s)", ref, task.Title, config.States[state])
+	defer setPhase("") // al terminar la tarea (con éxito o con error) ya no está haciendo nada
 	// Lo primero: que el tablero refleje enseguida que la tarea está en marcha.
 	if err := moveTo(t, cfg, pid, task.ID, "in_progress"); err != nil {
 		return fmt.Errorf("pasar a EN CURSO: %w", err)
@@ -163,7 +163,8 @@ func processTask(ctx context.Context, cfg *config.Config, t tickets.Tracker, hos
 		return fmt.Errorf("%s: leer comentarios: %w", ref, err)
 	}
 	sessionID, saved := sessionFromComments(cs)
-	resume := rework && saved
+	// Se retoma la sesión en REWORK, o cuando YOLO devolvió la tarea con preguntas y tú las has respondido.
+	resume := saved && (rework || hasQuestions(cs) || hasElaborated(cs))
 	if !resume {
 		id, err := sessions.NewUUID()
 		if err != nil {
@@ -180,7 +181,7 @@ func processTask(ctx context.Context, cfg *config.Config, t tickets.Tracker, hos
 		return fail(t, cfg, pid, task, "todo", "no pude actualizar el repo desde origin", err)
 	}
 	startPoint := "origin/" + base
-	if rework {
+	if (rework || resume) && runner.RemoteBranchExists(cfg.Repo.Path, branch) {
 		startPoint = "origin/" + branch
 	}
 	// Si la sesión de Claude sigue viva en un REWORK, reutilizamos su worktree (es su carpeta de trabajo).
@@ -218,6 +219,18 @@ func processTask(ctx context.Context, cfg *config.Config, t tickets.Tracker, hos
 		SessionID:   sessionID,
 		Resume:      resume,
 	}
+	yolo := isYolo(t, task)
+	questions := questionsFile(cfg, ref)
+	if yolo && !rework && !resume {
+		session.Prompt = runner.YoloPrompt(ref, task.Title, task.Description, questions, decisionsFile(cfg, ref))
+	}
+	if yolo && resume && !rework {
+		session.Prompt = fmt.Sprintf("Tus preguntas sobre %s han sido respondidas. Respuestas:\n%s\n\nContinúa con la tarea sin esperar más respuestas. Si aún te falta algo imprescindible, escribe las preguntas en %s y para.", ref, commentsAfter(cs, questionsMarker), questions)
+	}
+	if !yolo && hasElaborated(cs) && !rework && !hasQuestions(cs) {
+		// Tarea elaborada en DRAFT: la sesión ya tiene el contexto, así que se implementa directamente.
+		session.Prompt = "Ahora implementa la tarea tal y como la hemos elaborado. Sigue el plan de la elaboración y no hagas preguntas nuevas salvo que sea imposible avanzar. No hagas commit ni push: lo hará la factory cuando termines."
+	}
 	if rework && alive {
 		// La sesión sigue abierta: el feedback se escribe directamente en ella.
 		cs, err := t.Comments(task.ID)
@@ -249,6 +262,11 @@ func processTask(ctx context.Context, cfg *config.Config, t tickets.Tracker, hos
 		if reason == "cancel" {
 			return ctx.Err()
 		}
+		if yolo {
+			if text := readQuestions(questions); text != "" {
+				return askQuestions(cfg, t, pid, task, dir, branch, text, logf)
+			}
+		}
 		changed, err := runner.Changed(dir, startSHA)
 		if err != nil {
 			return fail(t, cfg, pid, task, failState(rework), "no se pudo leer el estado del repo", err)
@@ -269,6 +287,13 @@ func processTask(ctx context.Context, cfg *config.Config, t tickets.Tracker, hos
 	setPhase(fmt.Sprintf("haciendo push de %s", ref))
 	if err := runner.CommitAndPush(dir, branch, msg); err != nil {
 		return fail(t, cfg, pid, task, failState(rework), "no se pudo hacer commit o push", err)
+	}
+	if yolo {
+		// Las decisiones que tomó sola quedan en la tarea para revisarlas. La sesión se mantiene hasta HECHO.
+		if d := readQuestions(decisionsFile(cfg, ref)); d != "" {
+			_ = t.AddComment(task.ID, "Decisiones tomadas por YOLO (revísalas si quieres):\n"+d)
+		}
+		_ = os.Remove(decisionsFile(cfg, ref))
 	}
 
 	if cfg.LocalDeploy {
@@ -425,4 +450,78 @@ func fail(t tickets.Tracker, cfg *config.Config, pid int64, task tickets.Task, s
 		return fmt.Errorf("%s: %s: %w", refOf(task), reason, cause)
 	}
 	return fmt.Errorf("%s: %s", refOf(task), reason)
+}
+
+// questionsMarker empieza el comentario con las preguntas de YOLO; las respuestas van después.
+const questionsMarker = "Preguntas de Claude"
+
+// questionsFile es el fichero (fuera del repo) donde Claude escribe las preguntas de una tarea YOLO.
+func questionsFile(cfg *config.Config, ref string) string {
+	dir := filepath.Join(cfg.StateDir(), "questions")
+	_ = os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, strings.ToLower(ref)+".md")
+}
+
+// readQuestions devuelve el texto de las preguntas (vacío si no hay).
+func readQuestions(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// hasQuestions indica si la tarea tiene preguntas de YOLO pendientes.
+func hasQuestions(cs []tickets.Comment) bool {
+	for _, c := range cs {
+		if strings.HasPrefix(tickets.PlainComment(c.Comment), questionsMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// commentsAfter devuelve, como lista, los comentarios escritos después del último comentario con ese prefijo.
+func commentsAfter(cs []tickets.Comment, prefix string) string {
+	start := 0
+	for i, c := range cs {
+		if strings.HasPrefix(tickets.PlainComment(c.Comment), prefix) {
+			start = i + 1
+		}
+	}
+	var parts []string
+	for _, c := range cs[start:] {
+		text := tickets.PlainComment(c.Comment)
+		if strings.HasPrefix(text, "La factory") || strings.HasPrefix(text, "Sesión de Claude") {
+			continue
+		}
+		parts = append(parts, "- "+text)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// askQuestions devuelve la tarea YOLO a DRAFT con las preguntas de Claude como comentario.
+// Si ya había cambios, se guardan en la rama como WIP para no perderlos; la sesión se cierra.
+func askQuestions(cfg *config.Config, t tickets.Tracker, pid int64, task tickets.Task, dir, branch, text string, logf func(string, ...any)) error {
+	ref := refOf(task)
+	if status, err := runner.Git(dir, "status", "--porcelain"); err == nil && strings.TrimSpace(status) != "" {
+		if err := runner.CommitAndPush(dir, branch, "WIP: "+ref+" (preguntas pendientes)"); err != nil {
+			logf("%s: no pude guardar el WIP: %v", ref, err)
+		}
+	}
+	_ = runner.EndSession(ref)
+	_ = os.Remove(questionsFile(cfg, ref))
+	_ = t.AddComment(task.ID, questionsMarker+" (YOLO necesita una decisión):\n"+text+"\n\nRespóndeme en un comentario y muévela a TODO para que continúe.")
+	if err := moveTo(t, cfg, pid, task.ID, "draft"); err != nil {
+		return err
+	}
+	logf("%s: YOLO tiene preguntas → DRAFT", ref)
+	return nil
+}
+
+// decisionsFile es el fichero donde una tarea YOLO anota las preguntas que se hizo y sus decisiones.
+func decisionsFile(cfg *config.Config, ref string) string {
+	dir := filepath.Join(cfg.StateDir(), "questions")
+	_ = os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, strings.ToLower(ref)+".decisions.md")
 }

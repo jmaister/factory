@@ -15,6 +15,12 @@ import (
 	"time"
 )
 
+// Label es una etiqueta de Vikunja.
+type Label struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+}
+
 // Bucket es una columna del tablero (sin tareas).
 type Bucket struct {
 	ID    int64  `json:"id"`
@@ -64,6 +70,10 @@ type Tracker interface {
 	GetTask(id int64) (Task, error)
 	// ListTasks devuelve las tareas del proyecto (con su identificador).
 	ListTasks(projectID int64) ([]Task, error)
+	// Labels devuelve los títulos de las etiquetas de la tarea.
+	Labels(taskID int64) ([]string, error)
+	// AddLabel añade una etiqueta a la tarea (la crea si no existe).
+	AddLabel(taskID int64, title string) error
 	// AddComment añade un comentario a la tarea.
 	AddComment(taskID int64, text string) error
 	// Comments devuelve los comentarios de la tarea, en orden cronológico.
@@ -72,6 +82,8 @@ type Tracker interface {
 	MoveTask(projectID int64, board Board, columnID, taskID int64) error
 	// SetTitle cambia el título de una tarea existente, dejando el resto de campos intactos.
 	SetTitle(taskID int64, title string) error
+	// SetDescription cambia la descripción (HTML) de una tarea existente.
+	SetDescription(taskID int64, description string) error
 	// TaskURL devuelve la URL web de una tarea.
 	TaskURL(id int64) string
 }
@@ -284,4 +296,49 @@ func (v *Vikunja) CreateWebhook(projectID int64, targetURL string, events []stri
 	err := v.do(http.MethodPut, fmt.Sprintf("/projects/%d/webhooks", projectID),
 		map[string]any{"target_url": targetURL, "events": events}, &h)
 	return h, err
+}
+
+// Labels devuelve los títulos de las etiquetas de la tarea.
+func (v *Vikunja) Labels(taskID int64) ([]string, error) {
+	var ls []Label
+	if err := v.do(http.MethodGet, fmt.Sprintf("/tasks/%d/labels", taskID), nil, &ls); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(ls))
+	for _, l := range ls {
+		out = append(out, l.Title)
+	}
+	return out, nil
+}
+
+// AddLabel añade la etiqueta a la tarea. Si la etiqueta no existe en Vikunja, la crea.
+func (v *Vikunja) AddLabel(taskID int64, title string) error {
+	var all []Label
+	if err := v.do(http.MethodGet, "/labels", nil, &all); err != nil {
+		return err
+	}
+	id := int64(0)
+	for _, l := range all {
+		if l.Title == title {
+			id = l.ID
+		}
+	}
+	if id == 0 {
+		var created Label
+		if err := v.do(http.MethodPut, "/labels", map[string]any{"title": title, "hex_color": "f59e0b"}, &created); err != nil {
+			return err
+		}
+		id = created.ID
+	}
+	return v.do(http.MethodPut, fmt.Sprintf("/tasks/%d/labels", taskID), map[string]any{"label_id": id}, nil)
+}
+
+// SetDescription cambia la descripción de la tarea (HTML), dejando el resto de campos intactos.
+func (v *Vikunja) SetDescription(taskID int64, description string) error {
+	var raw map[string]any
+	if err := v.do(http.MethodGet, fmt.Sprintf("/tasks/%d", taskID), nil, &raw); err != nil {
+		return err
+	}
+	raw["description"] = description
+	return v.do(http.MethodPost, fmt.Sprintf("/tasks/%d", taskID), raw, nil)
 }
